@@ -164,19 +164,59 @@ def get_prediction_and_explanation(user: UserProfile, log: DailyLog):
     
     return final_risk_score, explanation
 
+# --- [ NEW ] LEVEL 3 ANALYSIS: PROACTIVE TARGET SETTER ---
+
+def _get_daily_targets(user: UserProfile, log: DailyLog):
+    """
+    This new helper function generates an "ideal" quantitative plan for the user
+    based on their static profile AND their vitals (sleep, stress).
+    This allows the main feedback function to compare the user's log to an ideal plan.
+    """
+    # Start with a clinical baseline
+    targets = {
+        'carbs': 150,    # (g)
+        'protein': 100,  # (g)
+        'fat': 60,       # (g)
+        'activity': 30   # (min)
+    }
+
+    # --- Adjust targets based on user's state for the day ---
+    
+    # 1. Poor sleep = higher insulin resistance. Lower carb target.
+    if log.sleep_hours < 6:
+        targets['carbs'] -= 30  # (e.g., target is now 120g)
+        
+    # 2. High stress = cortisol spike. Lower carb target, increase activity.
+    if log.stress_level == "high":
+        targets['carbs'] -= 20  # (e.g., target is now 100g)
+        targets['activity'] += 15 # (e.g., target is now 45 min)
+        
+    # 3. Higher BMI = lower carb/fat target for weight management.
+    if user.bmi > 28:
+        targets['carbs'] -= 15   # (e.g., target is now 85g)
+        targets['fat'] -= 10     # (e.g., target is now 50g)
+
+    return targets
+
 # --- 3. PERSONALIZED FEEDBACK ENGINE (The "Smarter" Voice) ---
 
 def generate_personalized_feedback(user: UserProfile, log: DailyLog, risk_score: float, explanation: dict):
     """
     [ --- UPGRADED --- ]
-    Analyzes risk to generate QUANTITATIVE corrective and preventive suggestions.
+    Now includes all 3 levels of analysis:
+    1. Corrective (High-priority fixes)
+    2. Proactive (Quantitative, target-based feedback)
+    3. Positive (Reinforcement for good actions)
     """
     
     # --- Heuristic Constants for Quantitative Feedback ---
     CARB_BASELINE = 60  # (g) Assumed "normal" carb load for a meal
     CARB_TO_WALK_RATIO = 1.0 # (min/g) 1 minute of walking offsets 1g of excess carbs
     
-    # --- 1. Critical & High-Priority Feedback (Overrides all else) ---
+    # This will hold our final feedback string
+    suggestion = ""
+    
+    # --- LEVEL 1: CRITICAL & HIGH-PRIORITY FEEDBACK (Overrides all else) ---
     if "Missed Insulin Dose" in explanation:
         return ("**CRITICAL SUGGESTION:** You logged that you missed your insulin. "
                 "This is the #1 reason for your high-risk score. Please follow your doctor's "
@@ -187,8 +227,8 @@ def generate_personalized_feedback(user: UserProfile, log: DailyLog, risk_score:
                 "This is a key factor in your risk today. "
                 "Please try to set a reminder for your next dose.")
 
-    # --- 2. High-Risk Corrective Feedback ---
-    if risk_score > 0.6:
+    # --- LEVEL 2: HIGH-RISK CORRECTIVE FEEDBACK ---
+    elif risk_score > 0.6:
         # --- Quantitative Carb Suggestion ---
         if "High-Carb Meal ( > 80g)" in explanation and "Post-Meal Aerobic Activity" not in explanation:
             excess_carbs = log.carbs_g - CARB_BASELINE
@@ -197,56 +237,101 @@ def generate_personalized_feedback(user: UserProfile, log: DailyLog, risk_score:
             # Clamp the suggestion to a reasonable amount
             activity_suggestion_minutes = max(15, min(activity_suggestion_minutes, 45)) 
             
-            return (f"**HIGH RISK DETECTED.** Your carb load was high and un-managed by activity. "
+            suggestion = (f"**HIGH RISK DETECTED.** Your carb load was high and un-managed by activity. "
                     f"**Corrective Action:** To help your body process these {log.carbs_g}g of carbs, "
                     f"a **{activity_suggestion_minutes}-minute aerobic walk** in the next hour is strongly recommended.")
         
         # --- Stress Suggestion ---
-        if "High Stress Level" in explanation:
-            return ("**HIGH RISK DETECTED.** You noted high stress. Stress (cortisol) "
+        elif "High Stress Level" in explanation:
+            suggestion = ("**HIGH RISK DETECTED.** You noted high stress. Stress (cortisol) "
                     "can directly raise blood sugar, even if you eat perfectly. "
                     "**Corrective Action:** Please take 5-10 minutes for a guided breathing exercise or a quiet walk. "
                     "Managing stress is key to managing glucose.")
+        
+        # --- Fallback for other high-risk combos ---
+        else:
+            suggestion = ("**HIGH RISK DETECTED.** Multiple factors are contributing to this risk. "
+                          "**Corrective Action:** A 15-minute walk is recommended. "
+                          "**Preventive Tip:** Please review the risk factors in the 'Why?' section and let's aim to adjust one or two tomorrow.")
 
-    # --- 3. Moderate-Risk Corrective Feedback ---
-    elif risk_score > 0.4:
-        if "High-Carb Meal ( > 80g)" in explanation and "Balanced Meal Offset" not in explanation:
-            return ("**MODERATE RISK.** Your meal was high in carbs and low in protein/fat. "
+    # --- LEVEL 3: MODERATE & LOW-RISK (Proactive & Positive Feedback) ---
+    else:
+        # --- First, check for positive reinforcement ---
+        if "Post-Meal Aerobic Activity" in explanation:
+             suggestion = ("✅ **PERFECT STRATEGY!** You logged a high-carb meal *and* the aerobic activity "
+                     "to manage it. This is exactly how to do it. Your risk score is low as a result. ")
+        
+        elif risk_score < 0.2: # All-clear!
+             suggestion = ("✅ **GREAT JOB!** Your risk score is low. "
+                "Your logs show you're balancing your meals, activity, and medication well. ")
+
+        # --- If no major corrective/positive feedback, give moderate tips ---
+        elif "High-Carb Meal ( > 80g)" in explanation and "Balanced Meal Offset" not in explanation:
+            suggestion = ("**MODERATE RISK.** Your meal was high in carbs and low in protein/fat. "
                     "**Corrective Action:** A quick 10-minute walk would be great. "
                     "**Preventive Tip:** For your next meal, try adding a source of protein (like chicken or beans) "
                     "to your carbs to help slow down sugar absorption.")
         
-        if "Poor Sleep ( < 6 hours)" in explanation:
-            return ("**MODERATE RISK.** You logged poor sleep. This can affect your "
+        elif "Poor Sleep ( < 6 hours)" in explanation:
+            suggestion = ("**MODERATE RISK.** You logged poor sleep. This can affect your "
                     "sugar levels all day. Your body may be more sensitive to carbs today. "
                     "**Preventive Tip:** Let's focus on planning for a good night's rest tonight.")
-
-    # --- 4. Low-Risk Preventive & Positive Feedback ---
-    else:
-        # --- Preventive Tip (Even if score is low) ---
-        if "High Stress Level" in explanation:
-            return ("✅ **GREAT JOB!** Your risk score is low, *even though* you're under high stress. "
-                    "You are managing it well! **Preventive Tip:** Remember that stress can build up. "
-                    "Try to start tomorrow with 5 minutes of quiet time to stay ahead.")
-                    
-        if "Post-Meal Aerobic Activity" in explanation:
-             return ("✅ **PERFECT STRATEGY!** You logged a high-carb meal *and* the aerobic activity "
-                     "to manage it. This is exactly how to do it. Your risk score is low as a result. "
-                     "Keep up the fantastic work!")
         
-        # --- Default "All-Clear" ---
-        return ("✅ **GREAT JOB!** Your risk score is low. "
-                "Your logs show you're balancing your meals, activity, and medication well. "
-                "You're doing fantastic!")
+        # --- Default positive feedback if suggestion is still empty ---
+        if not suggestion:
+            suggestion = ("✅ **GOOD WORK!** Your risk is well-managed. ")
 
-    # A default catch-all
-    return "Please be mindful of your logged items. Try to balance your next meal and add some light activity."
+
+    # --- [ NEW ] LEVEL 3, PART 2: APPEND QUANTITATIVE PREVENTIVE ANALYSIS ---
+    # This section adds the "have x more carbs", "do y more activity" feedback
+    # We do this *in addition* to the main suggestion, unless it was a critical error.
+    
+    if "Missed Insulin Dose" not in explanation and "Missed Metformin Dose" not in explanation:
+        
+        # Get the user's "ideal" targets for today
+        targets = _get_daily_targets(user, log)
+        
+        # This list will hold our new proactive tips
+        proactive_tips = []
+        
+        # 1. Analyze Carbs
+        carb_diff = targets['carbs'] - log.carbs_g
+        if carb_diff < -15: # User went more than 15g OVER target
+            proactive_tips.append(f"Your carb log of {log.carbs_g}g was **{abs(carb_diff)}g over** your personalized target of {targets['carbs']}g for today.")
+        
+        # 2. Analyze Protein
+        protein_diff = targets['protein'] - log.protein_g
+        if protein_diff > 15: # User went more than 15g UNDER target
+            proactive_tips.append(f"You were **{protein_diff}g under** your protein target of {targets['protein']}g. Adding more protein can help with balance.")
+            
+        # 3. Analyze Fat
+        fat_diff = targets['fat'] - log.fat_g
+        if fat_diff > 10: # User went more than 10g UNDER target
+            proactive_tips.append(f"You were {fat_diff}g under your healthy fat target. Don't be afraid to add healthy fats like avocado or nuts.")
+
+        # 4. Analyze Activity
+        activity_diff = targets['activity'] - log.activity_minutes
+        if activity_diff > 10: # User was more than 10 min UNDER target
+            proactive_tips.append(f"You were **{activity_diff} minutes short** of your activity target of {targets['activity']} minutes. Let's try to close that gap tomorrow!")
+            
+        # --- Now, append these tips to the main suggestion ---
+        if proactive_tips:
+            # Add a header for the new section
+            suggestion += "\n\n**--- Proactive Plan for Tomorrow ---**\n"
+            # Add each tip as a bullet point
+            for tip in proactive_tips:
+                suggestion += f"\n• {tip}"
+        elif risk_score < 0.2:
+            # If they hit all their targets
+            suggestion += "You also hit your personalized macro and activity targets for the day. Fantastic!"
+
+    return suggestion
 
 
 # --- 4. FLASK API SERVER (Now "crash-proof") ---
 
 app = Flask(__name__)
-CORS(app)  # Initialize CORS for the entire app. This allows all origins.
+CORS(app)  # Initialize CORS for the entire app. This allows all origins
 
 # This dictionary acts as our simple, in-memory database
 USER_DATABASE = {}
