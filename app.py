@@ -1,5 +1,6 @@
 import datetime
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # Import CORS
 
 # --- 1. DATA STRUCTURES ---
 
@@ -169,6 +170,7 @@ def generate_personalized_feedback(user: UserProfile, log: DailyLog, risk_score:
 # --- 4. FLASK API SERVER ---
 
 app = Flask(__name__)
+CORS(app)  # Initialize CORS for the entire app. This allows all origins.
 
 # This dictionary acts as our simple, in-memory database
 # In a real app, this would be a real database (like Firebase or PostgreSQL)
